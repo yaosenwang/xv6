@@ -66,6 +66,8 @@ void            ireclaim(int);
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
+void*           superpg_kalloc(void);
+void            superpg_kfree(void *);
 
 // log.c
 void            initlog(int, struct superblock*);

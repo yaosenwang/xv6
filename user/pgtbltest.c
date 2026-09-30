@@ -141,10 +141,12 @@ superpg_fork()
 
   // check if parent has super pages
   supercheck(end);
+  //printf("1 ok, end:%p\n", end);
   if((pid = fork()) < 0) {
     err("fork");
   } else if(pid == 0) {
     // check if child's address space has super pages
+    //printf("check %d\n", getpid());
     supercheck(end);
     exit(0);
   } else {
@@ -205,7 +207,7 @@ superpg_free()
   // free last 4096 bytes of a super page
   sbrk(-PGSIZE);
   a = sbrk(0);
-
+  //printf("superpg_free: freed 4096 bytes of a super page, a=%p, %d\n", a, *(a-PGSIZE+1));
   if (*(a - PGSIZE + 1) != '9') {
     err("lost content after freeing part of super page");
   }
