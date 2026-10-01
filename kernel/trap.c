@@ -171,6 +171,20 @@ clockintr()
     release(&tickslock);
   }
 
+  // alarm process
+  struct proc *cur = myproc();
+  if (cur && !cur->alarm.handling && cur->alarm.init_ticks != 0) {
+    cur->alarm.left_ticks--;
+    if (cur->alarm.left_ticks == 0) {
+      cur->alarm.left_ticks = cur->alarm.init_ticks;
+      // save context before occur clock interrupt
+      cur->alarm.trapframe = *cur->trapframe;
+      // when return to user space, jump to handler
+      cur->trapframe->epc = cur->alarm.handler;
+      cur->alarm.handling = 1;
+    }
+  }
+
   // ask for the next timer interrupt. this also clears
   // the interrupt request. 1000000 is about a tenth
   // of a second.

@@ -62,11 +62,37 @@ sys_sbrk(void)
   return addr;
 }
 
+uint64 sys_sigalarm(void)
+{
+  struct proc *cur;
+  int ticks;
+  uint64 handler;
+  argint(0, &ticks);
+  argaddr(1, &handler);
+
+  cur = myproc();
+  cur->alarm.init_ticks = ticks;
+  cur->alarm.left_ticks = ticks;
+  cur->alarm.handler = handler;
+  return 0; 
+}
+
+uint64 sys_sigreturn(void)
+{
+  struct proc *cur = myproc();
+
+  memmove(cur->trapframe, &cur->alarm.trapframe, sizeof(struct trapframe));
+  cur->alarm.handling = 0;
+  return cur->trapframe->a0;
+}
+
 uint64
 sys_pause(void)
 {
   int n;
   uint ticks0;
+
+  backtrace();
 
   argint(0, &n);
   if(n < 0)
