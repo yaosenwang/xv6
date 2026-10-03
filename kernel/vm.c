@@ -308,9 +308,27 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       continue;   // physical page hasn't been allocated
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
+    // if only read , just copy the page
+    // if write and already cow, just use the same page
+    // if write and not cow, just use the same page, and change parent and child to cow
+    if (! (flags&PTE_W)) // only read
+    {
+      mem = kalloc();
+      if(mem == 0)
+        goto err;
+      memmove(mem, (char*)pa, PGSIZE);
+    }
+    else
+    {
+      kref(pa);
+      mem = (char*)pa;
+      if (! (flags&PTE_COW)) // not cow, change parent and child to cow
+      {
+        *pte &= ~PTE_W; 
+        *pte |= PTE_COW; 
+        flags = PTE_FLAGS(*pte);
+      }
+    }
     if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
       kfree(mem);
       goto err;
@@ -359,8 +377,14 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
     pte = walk(pagetable, va0, 0);
     // forbid copyout over read-only user text pages.
-    if((*pte & PTE_W) == 0)
-      return -1;
+    if ((*pte&PTE_W) == 0) // read-only?
+    {
+      if ((*pte&PTE_COW) == 0) // not cow, then must be read-only 
+        return -1;
+      // for cow: trigger page fault to do all things
+      if((pa0 = vmfault(pagetable, va0, 0)) == 0) 
+        return -1;
+    }
       
     n = PGSIZE - (dstva - va0);
     if(n > len)
@@ -458,13 +482,32 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
   if (va >= p->sz)
     return 0;
   va = PGROUNDDOWN(va);
-  if(ismapped(pagetable, va)) {
-    return 0;
-  }
+
   mem = (uint64) kalloc();
   if(mem == 0)
     return 0;
   memset((void *) mem, 0, PGSIZE);
+  // 1. if read 
+  //      1.1  pte not valid: lazy . alloc memory and map it
+  //      1.2  pte valid: return 0
+  // 2. if write
+  //      2.1 pte not valid: lazy . alloc memory and map it
+  //      2.2 pte valid:
+  //          2.2.1 pte is cow: alloc memory, copy the content, map it
+  //          2.2.2 pte is not cow: return 0
+  pte_t *pte = walk(pagetable, va, 0);
+  if (pte && (*pte & PTE_V)) // pte is valid
+  {
+    if (read || !(PTE_FLAGS(*pte)&PTE_COW)) // (read and already mapped) or (write and not cow), return 0
+    {
+      kfree((void *)mem);
+      return 0;
+    }
+    // cow
+    memmove((void *)mem, (void *)PTE2PA(*pte), PGSIZE); 
+    kfree((void *)PTE2PA(*pte));
+    *pte = 0;
+  }
   if (mappages(p->pagetable, va, PGSIZE, mem, PTE_W|PTE_U|PTE_R) != 0) {
     kfree((void *)mem);
     return 0;
