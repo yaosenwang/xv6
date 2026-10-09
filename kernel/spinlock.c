@@ -121,32 +121,96 @@ release(struct spinlock *lk)
 }
 
 #ifdef LAB_LOCK
+// if don't have writer active and pending then try to get the lock.
 static void
 read_acquire_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  acquire(&rwlk->l);
+  uint64 old_lock, expect_lock, new_lock;
+  
+  old_lock = rwlk->locked;
+  while (1)
+  {
+    expect_lock = READ_ACTIVE(old_lock) << READ_ACTIVE_SHIFT;
+    new_lock = (READ_ACTIVE(old_lock)+1) << READ_ACTIVE_SHIFT;
+    old_lock = __sync_val_compare_and_swap(&rwlk->locked, expect_lock, new_lock);
+    if (old_lock == expect_lock)
+      break;
+  }
 }
 
+// just dec the reader active num
 static void
 read_release_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  release(&rwlk->l);
+  // can just use below code, but i want the code to be readable and don't care about the bit fields.
+  // __sync_fetch_and_sub(&rwlk->locked, 1);
+
+  uint64 old_lock, expect_lock, new_lock;
+  
+  old_lock = rwlk->locked;
+  while (1)
+  {
+    expect_lock = old_lock;
+    new_lock =  ((READ_ACTIVE(old_lock)-1) << READ_ACTIVE_SHIFT) | 
+                (WRITE_PENDING(old_lock) << WRITE_PENDING_SHIFT);
+    old_lock = __sync_val_compare_and_swap(&rwlk->locked, expect_lock, new_lock);
+    if (old_lock == expect_lock)
+      break;
+  }
 }
 
+// writer priority lock
+// 1. inc pending writer num to avoid subsequent readers get the lock.
+// don't care about the writer and readr active
+// 2. get the write lock. 
+// so check if have one writer or any reader holding the lock, 
+// if don't then dec pending writer num and try to get the lock
 static void
 write_acquire_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  acquire(&rwlk->l);
+  uint64 old_lock, expect_lock, new_lock;
+
+  // 1.
+  old_lock = rwlk->locked;
+  while (1)
+  {
+    expect_lock = old_lock;
+    new_lock =  ((WRITE_PENDING(old_lock)+1) << WRITE_PENDING_SHIFT) | 
+                (WRITE_ACTIVE(old_lock) << WRITE_ACTIVE_SHIFT) | 
+                (READ_ACTIVE(old_lock) << READ_ACTIVE_SHIFT);
+    old_lock = __sync_val_compare_and_swap(&rwlk->locked, expect_lock, new_lock);
+    if (old_lock == expect_lock)
+      break;
+  }
+
+  // 2.
+  old_lock = rwlk->locked;
+  while (1)
+  {
+    expect_lock = WRITE_PENDING(old_lock) << WRITE_PENDING_SHIFT;
+    new_lock =  WRITE_ACTIVE_MASK | 
+                ((WRITE_PENDING(old_lock)-1) << WRITE_PENDING_SHIFT);
+    old_lock = __sync_val_compare_and_swap(&rwlk->locked, expect_lock, new_lock);
+    if (old_lock == expect_lock)
+      break;
+  }
 }
 
+// just removee the writer active flag
 static void
 write_release_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  release(&rwlk->l);
+  uint64 old_lock, expect_lock, new_lock;
+
+  old_lock = rwlk->locked;
+  while (1)
+  {
+    expect_lock = old_lock;
+    new_lock = old_lock & (~WRITE_ACTIVE_MASK);
+    old_lock = __sync_val_compare_and_swap(&rwlk->locked, expect_lock, new_lock);
+    if (old_lock == expect_lock)
+      break;
+  }
 }
 
 void
@@ -180,15 +244,15 @@ write_release(struct rwspinlock *rwlk)
 void
 initrwlock(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
   initlock(&rwlk->l, "rwlk");
+  rwlk->locked = 0;
 }
 
 // Test rwspinlock implementation.
+static uint barrier;
 static void
 rwspinlock_test_step(uint step, const char *msg)
 {
-  static uint barrier;
   const uint ncpu = 4;
 
   __atomic_fetch_add(&barrier, 1, __ATOMIC_ACQ_REL);
@@ -406,6 +470,9 @@ sys_rwlktest()
   }
 
   rwspinlock_test_step(++step, "done");
+  // reset barrier for next test
+  if (id == 0)
+    __atomic_store_n(&barrier, 0, __ATOMIC_RELAXED);
 
   printf("rwspinlock_test(%d): %d\n", id, r);
   pop_off();
